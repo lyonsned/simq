@@ -36,6 +36,18 @@ cargo run -p simq --example fluent_api
 Covers the whole builder surface: gates, inspection, ASCII rendering,
 error handling, exact probabilities.
 
+## Textbook circuits
+
+| Example | Command |
+|---------|---------|
+| Quantum teleportation (fluent API) | `cargo run -p simq --example teleportation` |
+| Grover's search, 3 qubits | `cargo run -p simq --example grover` |
+| Quantum Fourier transform | `cargo run -p simq --example qft` |
+
+Each one checks its output against the analytic result (teleported
+statistics, sin²((2k+1)·θ), the DFT) to 1e-10, so they double as
+correctness probes, not just demos.
+
 ## Variational algorithms
 
 ### Minimal VQE with gradient descent
@@ -127,6 +139,7 @@ Located in [`simq-py/examples/`](https://github.com/glanzz/simq/tree/main/simq-p
 |--------|---------------|
 | `00_getting_started.py` | End-to-end tour of the Python API |
 | `basic_circuit.py` | Circuit construction and simulation |
+| `ghz_counts.py` | GHZ state → 1024 shots → sorted counts (Rust README twin) |
 | `parameterized_circuit.py` | Parameterized gates and sweeps |
 | `noise_simulation.py` | Noise channels and hardware models |
 | `vqe_example.py` | Complete VQE optimization loop |

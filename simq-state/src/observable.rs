@@ -87,7 +87,44 @@ impl fmt::Display for Pauli {
 
 /// A tensor product of Pauli operators (Pauli string)
 ///
-/// Represents observables like X⊗X⊗I⊗Z (written as "XXIZ")
+/// Represents observables like X⊗X⊗I⊗Z (written as "XXIZ").
+///
+/// # Qubit ordering
+///
+/// The string reads **left-to-right starting at qubit 0**: character `i`
+/// acts on qubit `i`. So `"XZ"` means X on qubit 0 and Z on qubit 1:
+///
+/// ```
+/// use simq_state::{DenseState, PauliString};
+/// use num_complex::Complex64;
+///
+/// // |+0⟩ = (|00⟩ + |10⟩)/√2 — qubit 0 in |+⟩, qubit 1 in |0⟩.
+/// let s = std::f64::consts::FRAC_1_SQRT_2;
+/// let state = DenseState::from_amplitudes(2, &[
+///     Complex64::new(s, 0.0),
+///     Complex64::new(s, 0.0),
+///     Complex64::new(0.0, 0.0),
+///     Complex64::new(0.0, 0.0),
+/// ])
+/// .unwrap();
+/// // X flips |+⟩ to itself, Z leaves |0⟩ alone: ⟨XZ⟩ = +1.
+/// let xz = PauliString::from_str("XZ").unwrap();
+/// assert!((xz.expectation_value(&state).unwrap() - 1.0).abs() < 1e-12);
+/// ```
+///
+/// # Coming from Qiskit?
+///
+/// Qiskit reads Pauli strings **right-to-left**: its qubit 0 is the
+/// *rightmost* character. The same operator is written mirrored:
+///
+/// | Operator | SimQ | Qiskit `SparsePauliOp` |
+/// |---|---|---|
+/// | X on qubit 0, Z on qubit 1 | `"XZ"` | `"ZX"` |
+/// | Z on qubit 0, Z on qubit 1 | `"ZZ"` | `"ZZ"` (symmetric — same either way) |
+///
+/// Porting a Hamiltonian character-by-character without mirroring silently
+/// builds the reversed operator on asymmetric strings. Nothing errors, so
+/// double-check any string that is not a palindrome.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PauliString {
     /// Pauli operators for each qubit
@@ -348,7 +385,11 @@ impl fmt::Display for PauliString {
 
 /// A weighted sum of Pauli strings (Pauli observable)
 ///
-/// Represents observables like 0.5*X⊗X + 0.3*Z⊗Z
+/// Represents observables like 0.5*X⊗X + 0.3*Z⊗Z.
+///
+/// Each term follows [`PauliString`]'s qubit ordering: string character `i`
+/// acts on qubit `i` (left-to-right from qubit 0 — the mirror image of
+/// Qiskit's right-to-left convention).
 #[derive(Debug, Clone)]
 pub struct PauliObservable {
     /// Terms in the observable (Pauli string, coefficient)

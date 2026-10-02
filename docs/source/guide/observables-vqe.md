@@ -26,6 +26,16 @@ let zz = PauliObservable::from_pauli_string(
     PauliString::from_str("ZZ").unwrap(), 0.5);
 ```
 
+### Qubit ordering (read this before porting from Qiskit)
+
+SimQ reads Pauli strings **left-to-right starting at qubit 0**:
+character `i` acts on qubit `i`, so `"XZ"` is X on qubit 0 and Z on
+qubit 1. Qiskit does the opposite — its qubit 0 is the **rightmost**
+character — so the same operator is `"ZX"` there. (Palindromes like
+`"ZZ"` are unaffected.) Copying a Hamiltonian over character-by-character
+without mirroring silently builds the reversed operator on any
+asymmetric string, so double-check non-palindromic strings when porting.
+
 ## Exact expectation values
 
 An energy function for VQE is a few lines:

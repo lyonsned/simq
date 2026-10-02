@@ -81,6 +81,7 @@ The repository ships runnable Python examples in
 |--------|---------------|
 | `00_getting_started.py` | Minimal end-to-end tour |
 | `basic_circuit.py` | Circuit construction and simulation basics |
+| `ghz_counts.py` | GHZ state → 1024 shots → sorted counts (Rust README twin) |
 | `parameterized_circuit.py` | Parameter binding and sweeps |
 | `noise_simulation.py` | Noise channels and hardware noise models |
 | `vqe_example.py` | A complete VQE optimization loop |
