@@ -841,3 +841,46 @@ fn fusion_cache_hits_across_repeated_same_shape_runs() {
         sim.fusion_cache_hits()
     );
 }
+
+// ============================================================================
+// Parallel-threshold equivalence (issue #76)
+// ============================================================================
+
+/// Forcing the rayon kernels on (tiny threshold) vs off (huge threshold)
+/// must not change the simulated state: parallel chunking only affects
+/// summation order, so probabilities must agree to floating-point noise.
+#[test]
+fn parallel_and_serial_kernels_agree() {
+    let n = 8;
+    let mut c = Circuit::new(n);
+    for layer in 0..3 {
+        for qq in 0..n {
+            c.add_gate(
+                Arc::new(RotationY::new(0.3 * (layer as f64 + 1.0) + 0.05 * qq as f64)),
+                &[q(qq)],
+            )
+            .unwrap();
+        }
+        for qq in 0..n - 1 {
+            c.add_gate(Arc::new(CNot), &[q(qq), q(qq + 1)]).unwrap();
+        }
+    }
+
+    let run = |par_qubits: usize| {
+        let mut cfg = SimulatorConfig::default();
+        cfg.parallel_threshold = par_qubits;
+        cfg.optimize_circuit = false;
+        Simulator::new(cfg).run(&c).unwrap().state.to_dense_vec()
+    };
+
+    let serial = run(30); // 2^30 amplitudes: kernels stay single-threaded
+    let parallel = run(1); // 2 amplitudes: every eligible kernel uses rayon
+
+    assert_eq!(serial.len(), parallel.len());
+    let max_diff = serial
+        .iter()
+        .zip(parallel.iter())
+        .map(|(a, b)| (a - b).norm())
+        .fold(0.0f64, f64::max);
+    assert!(max_diff < 1e-12, "parallel vs serial max amplitude diff {max_diff:e}");
+}

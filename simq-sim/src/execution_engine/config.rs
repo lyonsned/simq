@@ -70,9 +70,11 @@ impl Default for ExecutionConfig {
             mode: ExecutionMode::Adaptive,
             parallel_strategy: ParallelStrategy::LayerBased,
             // Gate kernels are memory-bound: on typical 4-8 core hosts rayon
-            // fork/join costs more than it saves below a few MiB of state
-            // (issue #76), so parallelism engages at 2^18 amplitudes (4 MiB).
-            parallel_threshold: 1 << 18,
+            // fork/join costs more than it saves below hundreds of KiB of
+            // state (issue #76), so parallelism engages at 2^15 amplitudes
+            // (512 KiB). The kernel-level MIN_PAR_BLOCK guard keeps tasks
+            // at >=128 KiB regardless.
+            parallel_threshold: 1 << 15,
             use_gpu: false,
             gpu_device_id: 0,
             adaptive_state: true,
@@ -107,7 +109,7 @@ impl ExecutionConfig {
         Self {
             mode: ExecutionMode::Parallel,
             parallel_strategy: ParallelStrategy::LayerBased,
-            parallel_threshold: 1 << 18,
+            parallel_threshold: 1 << 15,
             use_gpu: false,
             adaptive_state: true,
             validate_state: false,

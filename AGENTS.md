@@ -30,6 +30,7 @@ cargo test --doc --workspace --exclude simq-py
 - `cargo test -p <crate> --lib -q` or `cargo test -p <crate> --test <name> -q`.
 - Never bare `cargo test -p <crate> --tests`: it compiles every file in `tests/`, including broken untracked repros (e.g. `simq-backend/tests/sampling_bias.rs` fails on missing `rand` import and has no assertions). Untracked `*_bug.rs` / `reset_bug.rs` / `write_bytes_*.rs` are scratch, not repo tests.
 - `cargo test -p simq-core --lib` currently fails pre-existing (`serialization`/`bincode` cfg errors) — verified on clean tree, don't chase it.
+- Pre-existing failures (verified on clean tree, unrelated to in-flight work): `simq-sim --lib batch_eval::...shares_the_fusion_cache_across_instances` and `simq-sim --test comprehensive_e2e fusion_cache_hits_across_repeated_same_shape_runs` (both expect fusion-cache hits, get 0).
 - Stable `cargo fmt` prints warnings for nightly-only `rustfmt.toml` keys (`wrap_comments`, `imports_granularity`, etc.) — harmless. Run `cargo fmt -p <crate>` after editing.
 
 ## Gotchas that bite
