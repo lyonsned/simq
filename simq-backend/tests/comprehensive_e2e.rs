@@ -573,16 +573,16 @@ fn sabre_router_create() {
     let sr = SabreRouter::new(20, 0.99);
     let cg = ConnectivityGraph::linear_chain(5);
     let result = sr.route(3, &cg);
-    assert!(result.is_ok());
+    // Honestly unimplemented: must error instead of claiming zero SWAPs.
+    assert!(result.is_err());
 }
 
 #[test]
 fn sabre_router_default() {
     let sr = SabreRouter::default();
     let cg = ConnectivityGraph::all_to_all(4);
-    let swaps = sr.route(4, &cg).unwrap();
-    // All-to-all: no swaps needed
-    assert!(swaps.is_empty());
+    let result = sr.route(4, &cg);
+    assert!(result.is_err());
 }
 
 // ============================================================================

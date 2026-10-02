@@ -472,6 +472,7 @@ pub struct DecompositionRule {
 }
 
 /// Qubit mapping for transpilation
+#[derive(Debug, Clone)]
 pub struct QubitMapping {
     /// Logical to physical qubit mapping
     logical_to_physical: Vec<usize>,

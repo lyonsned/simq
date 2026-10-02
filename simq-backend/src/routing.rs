@@ -238,15 +238,20 @@ impl SwapGate {
 
 /// SABRE routing algorithm
 ///
-/// SWAP-based Approximate BidirectionalRoutEr
+/// SWAP-based Bidirectional heuristic search for qubit Routing.
 /// Reference: https://arxiv.org/abs/1809.02573
+///
+/// Note: the full SABRE algorithm requires the circuit's two-qubit gate
+/// list to evaluate candidate SWAPs. The current `route()` signature does
+/// not receive a circuit, so it cannot produce a valid SWAP plan and
+/// returns an error rather than a misleading empty plan. Use
+/// [`Router::find_swap_chain`] (greedy shortest-path insertion, as used by
+/// the transpiler's `map_and_route`) for routing today.
 pub struct SabreRouter {
     /// Lookahead window size
-    #[allow(dead_code)]
     lookahead: usize,
 
     /// Decay factor for heuristic
-    #[allow(dead_code)]
     decay: f64,
 }
 
@@ -258,34 +263,60 @@ impl SabreRouter {
 
     /// Route a circuit using SABRE algorithm
     ///
-    /// This is a placeholder for the full SABRE implementation.
-    /// The full algorithm would:
-    /// 1. Process gates in order
-    /// 2. For each two-qubit gate:
-    ///    - If qubits are connected, execute
-    ///    - Otherwise, find best SWAP using heuristic
-    /// 3. Repeat until all gates are routed
+    /// Returns an error: full SABRE routing is not implemented yet, and the
+    /// method does not receive the circuit gates it would need to compute a
+    /// plan. Returning `Ok(vec![])` would falsely claim every circuit is
+    /// routable with zero SWAPs, so callers get an explicit error instead.
     pub fn route(
         &self,
         _num_qubits: usize,
         _connectivity: &ConnectivityGraph,
     ) -> Result<Vec<SwapGate>> {
-        // TODO: Implement full SABRE algorithm
-        // This requires circuit gate iteration
-        Ok(vec![])
+        Err(BackendError::Other(
+            "SabreRouter::route is not implemented: circuit-aware SABRE routing \
+             requires the gate list; use Router::find_swap_chain for greedy \
+             shortest-path SWAP insertion"
+                .to_string(),
+        ))
     }
 
     /// Calculate SABRE heuristic score for a SWAP
+    ///
+    /// Scores a candidate SWAP by the total shortest-path distance between
+    /// each upcoming two-qubit pair after the SWAP is applied, weighted by
+    /// `decay` per lookahead step. Lower is better.
+    ///
+    /// Currently exercised only by tests: `route()` errors until the
+    /// circuit-aware SABRE pass lands, at which point this will score
+    /// candidate SWAPs.
     #[allow(dead_code)]
     fn heuristic_score(
         &self,
-        _swap: &SwapGate,
-        _mapping: &QubitMapping,
-        _connectivity: &ConnectivityGraph,
+        swap: &SwapGate,
+        mapping: &QubitMapping,
+        connectivity: &ConnectivityGraph,
+        upcoming_pairs: &[(usize, usize)],
     ) -> f64 {
-        // TODO: Implement SABRE heuristic
-        // Score = sum of distances for lookahead gates after this SWAP
-        0.0
+        let mut trial = mapping.clone();
+        swap.apply(&mut trial);
+
+        let mut score = 0.0;
+        let mut weight = 1.0;
+        for (i, &(l1, l2)) in upcoming_pairs.iter().enumerate() {
+            if i >= self.lookahead {
+                break;
+            }
+            let (Some(p1), Some(p2)) = (trial.get_physical(l1), trial.get_physical(l2)) else {
+                continue;
+            };
+            let dist = connectivity
+                .shortest_path(p1, p2)
+                .map(|p| p.len().saturating_sub(1))
+                .unwrap_or(usize::MAX / 2) as f64;
+            score += weight * dist;
+            weight *= self.decay;
+        }
+        score
     }
 }
 
@@ -542,10 +573,34 @@ mod tests {
 
     #[test]
     fn test_sabre_router_route() {
-        // Covers line 288: SabreRouter::route returns empty vec
+        // SabreRouter::route is honestly unimplemented: without the circuit
+        // gate list it cannot produce a plan, so it must error rather than
+        // return a misleading empty (zero-SWAP) success.
         let router = SabreRouter::default();
         let connectivity = ConnectivityGraph::linear_chain(4);
-        let swaps = router.route(4, &connectivity).unwrap();
-        assert!(swaps.is_empty());
+        let result = router.route(4, &connectivity);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_sabre_heuristic_score_prefers_closer_swap() {
+        // Pair (1,3) on 0-1-2-3 chain: identity distance is 2.
+        // SWAP(1,2) brings them adjacent (P2,P3 -> distance 1);
+        // SWAP(0,1) pushes L1 to P0 (P0,P3 -> distance 3).
+        let router = SabreRouter::new(20, 0.99);
+        let connectivity = ConnectivityGraph::linear_chain(4);
+        let mapping = QubitMapping::identity(4);
+        let upcoming = vec![(1usize, 3usize)];
+        let closer = SwapGate::new(1, 2);
+        let farther = SwapGate::new(0, 1);
+        let closer_score = router.heuristic_score(&closer, &mapping, &connectivity, &upcoming);
+        let farther_score = router.heuristic_score(&farther, &mapping, &connectivity, &upcoming);
+        assert!(closer_score.is_finite());
+        assert!(farther_score.is_finite());
+        assert!(
+            closer_score < farther_score,
+            "closer SWAP ({closer_score}) should beat farther SWAP ({farther_score})"
+        );
+        assert_eq!(router.heuristic_score(&closer, &mapping, &connectivity, &[]), 0.0);
     }
 }

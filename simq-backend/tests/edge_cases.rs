@@ -487,10 +487,9 @@ mod router_edge_cases {
     #[test]
     fn sabre_router_default() {
         let router = SabreRouter::default();
-        let swaps = router
-            .route(3, &ConnectivityGraph::linear_chain(3))
-            .unwrap();
-        assert!(swaps.is_empty()); // placeholder returns empty
+        let result = router.route(3, &ConnectivityGraph::linear_chain(3));
+        // Must error rather than return misleading empty plan.
+        assert!(result.is_err());
     }
 }
 
