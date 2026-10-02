@@ -217,21 +217,20 @@ impl CliffordTDecomposer {
     ///
     /// Recursively approximates any single-qubit unitary using Clifford+T gates.
     /// Achieves precision ε using O(log^c(1/ε)) gates where c ≈ 3.97.
+    ///
+    /// Only `depth == 0` (direct exact synthesis for π/4 multiples) is
+    /// implemented. Higher depths error instead of silently returning the
+    /// depth-0 result with unmet precision.
     pub fn solovay_kitaev(&self, matrix: &Matrix2, depth: usize) -> Result<Vec<CliffordTGate>> {
         if depth == 0 {
             // Base case: use direct decomposition
             return self.decompose_single_qubit(matrix);
         }
 
-        // Recursive case:
-        // 1. Find U₀ such that U ≈ U₀
-        // 2. Find V, W such that U₀⁻¹U ≈ VWV⁻¹W⁻¹
-        // 3. Recurse on V and W
-
-        // For now, fall back to direct decomposition
-        self.decompose_single_qubit(matrix)
-
-        // TODO: Implement full Solovay-Kitaev recursion
+        Err(QuantumError::ValidationError(format!(
+            "Solovay-Kitaev recursion (depth {depth}) is not implemented; \
+             only depth 0 direct synthesis of π/4-multiple rotations is supported"
+        )))
     }
 
     /// Count T gates in a gate sequence
@@ -307,6 +306,35 @@ impl CliffordTDecomposer {
 
         optimized
     }
+
+    /// Convert intermediate Clifford+T gates to concrete gate objects.
+    pub fn ct_gates_to_gates(ct_gates: &[CliffordTGate]) -> Vec<Arc<dyn Gate>> {
+        use simq_gates::{
+            Hadamard, PauliX, PauliY, PauliZ, SGate, SGateDagger, TGate, TGateDagger,
+        };
+
+        ct_gates
+            .iter()
+            .filter_map(|g| -> Option<Arc<dyn Gate>> {
+                match g {
+                    CliffordTGate::H => Some(Arc::new(Hadamard)),
+                    CliffordTGate::S => Some(Arc::new(SGate)),
+                    CliffordTGate::SDagger => Some(Arc::new(SGateDagger)),
+                    CliffordTGate::T => Some(Arc::new(TGate)),
+                    CliffordTGate::TDagger => Some(Arc::new(TGateDagger)),
+                    CliffordTGate::X => Some(Arc::new(PauliX)),
+                    CliffordTGate::Y => Some(Arc::new(PauliY)),
+                    CliffordTGate::Z => Some(Arc::new(PauliZ)),
+                    // Identity needs no physical gate; drop it so an
+                    // identity decomposition honestly yields zero gates.
+                    CliffordTGate::I => None,
+                    // CNOT is two-qubit and cannot appear in the
+                    // single-qubit path; drop rather than misrepresent.
+                    CliffordTGate::CNOT => None,
+                }
+            })
+            .collect()
+    }
 }
 
 impl Default for CliffordTDecomposer {
@@ -359,8 +387,15 @@ impl Decomposer for CliffordTDecomposer {
         let t_count = Self::count_t_gates(&ct_gates);
         let t_depth = Self::count_t_depth(&ct_gates);
 
-        // TODO: Convert Clifford+T gates to actual Gate objects
-        let gates: Vec<Arc<dyn Gate>> = vec![];
+        // Convert to concrete gate objects. Empty is only valid for the
+        // identity (no gates needed); otherwise an empty sequence with
+        // near-unit fidelity would silently delete the gate.
+        let gates = Self::ct_gates_to_gates(&ct_gates);
+        if gates.is_empty() && !ct_gates.is_empty() {
+            return Err(QuantumError::ValidationError(
+                "Clifford+T conversion produced no gates for a non-empty sequence".to_string(),
+            ));
+        }
 
         Ok(DecompositionResult {
             gates,
@@ -377,6 +412,11 @@ impl Decomposer for CliffordTDecomposer {
         })
     }
 
+    /// Check whether this decomposer may handle the gate.
+    ///
+    /// Shape check only (1 qubit + matrix present). `decompose` can still
+    /// return `Err` for rotations that are not multiples of π/4, which have
+    /// no exact Clifford+T synthesis; callers must handle that case.
     fn can_decompose(&self, gate: &dyn Gate) -> bool {
         gate.num_qubits() == 1 && gate.matrix().is_some()
     }
@@ -653,7 +693,7 @@ mod tests {
     }
 
     #[test]
-    fn test_solovay_kitaev_base_case_and_recursive_fallback() {
+    fn test_solovay_kitaev_base_case_and_recursive_error() {
         let decomposer = CliffordTDecomposer::new();
         let h = hadamard_matrix2();
 
@@ -661,9 +701,9 @@ mod tests {
         let base = decomposer.solovay_kitaev(&h, 0).unwrap();
         assert!(!base.is_empty());
 
-        // depth > 0 -> recursive case, currently falls back to direct decomposition
-        let recursive = decomposer.solovay_kitaev(&h, 3).unwrap();
-        assert!(!recursive.is_empty());
+        // depth > 0 -> recursion unimplemented, must error rather than
+        // silently return the depth-0 result with unmet precision.
+        assert!(decomposer.solovay_kitaev(&h, 3).is_err());
     }
 
     #[test]

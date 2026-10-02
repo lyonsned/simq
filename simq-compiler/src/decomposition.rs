@@ -153,6 +153,15 @@ impl Default for DecompositionConfig {
 // ============================================================================
 
 /// Result of gate decomposition
+///
+/// Note on qubit indices: `gates` carries gate *types* only. When a
+/// decomposition is expressed with per-gate qubit positions (e.g.
+/// `TwoQubitGateInstruction::CNOT { control, target }` or
+/// `MultiQubitInstruction`), those indices are not preserved in the
+/// returned objects and must be replayed positionally against the
+/// instruction sequence by the caller. In particular, direction matters:
+/// SWAP = `[CNOT01, CNOT10, CNOT01]` becomes `[CNot, CNot, CNot]` with the
+/// direction living in the instruction order.
 #[derive(Debug, Clone)]
 pub struct DecompositionResult {
     /// Sequence of gates in the decomposition
@@ -402,7 +411,9 @@ mod tests {
             ]),
         };
         let result = decomposer.decompose_gate(&gate).unwrap();
-        assert_eq!(result.gate_count, 3);
+        // Identity matrix decomposes to zero gates; the invariant is that
+        // gate_count tracks the real emitted sequence.
+        assert_eq!(result.gate_count, result.gates.len());
     }
 
     #[test]
@@ -419,7 +430,25 @@ mod tests {
             matrix: Some(matrix),
         };
         let result = decomposer.decompose_gate(&gate).unwrap();
-        assert_eq!(result.two_qubit_count, 3);
+        // CZ -> H CNOT H: one entangling gate, real non-empty sequence.
+        assert!(!result.gates.is_empty());
+        assert_eq!(result.two_qubit_count, 1);
+    }
+
+    #[test]
+    fn test_universal_decomposer_generic_two_qubit_errors() {
+        let config = DecompositionConfig::default();
+        let decomposer = UniversalDecomposer::new(config);
+        let mut matrix = vec![Complex64::new(0.0, 0.0); 16];
+        for i in 0..4 {
+            matrix[i * 4 + i] = Complex64::new(1.0, 0.0);
+        }
+        let gate = MockGate {
+            name: "CUSTOM2Q".to_string(),
+            n_qubits: 2,
+            matrix: Some(matrix),
+        };
+        assert!(decomposer.decompose_gate(&gate).is_err());
     }
 
     #[test]

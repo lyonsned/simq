@@ -93,18 +93,18 @@ impl TwoQubitDecomposer {
             return Err(QuantumError::ValidationError("Matrix is not unitary".to_string()));
         }
 
-        // TODO: Implement full canonical decomposition using:
-        // 1. Compute the "magic basis" transformation
-        // 2. Diagonalize in the magic basis to get local equivalence class
-        // 3. Compute single-qubit gates before/after each CNOT
-        //
-        // For now, return a placeholder
-
-        Ok(CanonicalDecomposition {
-            entangling_gate: self.entangling_gate,
-            single_qubit_layers: vec![],
-            num_entangling: 3,
-        })
+        // Full magic-basis canonical decomposition (arbitrary 2-qubit
+        // unitary -> ≤3 entangling gates + local rotations) is not
+        // implemented yet. Returning a placeholder with empty
+        // single_qubit_layers and fidelity 1.0 would silently delete the
+        // gate downstream, so fail loudly instead. Known gates (SWAP,
+        // iSWAP, CZ, CNOT conversions) are handled via their dedicated
+        // decompose_* helpers; only the generic path errors here.
+        Err(QuantumError::ValidationError(
+            "Generic two-qubit canonical decomposition (magic-basis) is not implemented; \
+             only known gates (SWAP, iSWAP, √iSWAP, CNOT<->CZ) are supported"
+                .to_string(),
+        ))
     }
 
     /// Decompose SWAP gate
@@ -243,14 +243,59 @@ impl TwoQubitDecomposer {
     }
 
     /// Optimize the decomposition by reducing gate count
-    pub fn optimize_decomposition(&self, _decomp: &mut CanonicalDecomposition, level: u8) {
-        if level == 0 {}
+    ///
+    /// Currently a pass-through: no merging/cancellation is implemented yet.
+    /// Kept as a hook so callers can request optimization levels without
+    /// silent behavior change; returns without modifying `decomp`.
+    pub fn optimize_decomposition(&self, _decomp: &mut CanonicalDecomposition, _level: u8) {}
 
-        // TODO: Implement optimization:
-        // - Merge adjacent single-qubit gates
-        // - Cancel identity gates
-        // - Reduce CNOT count if possible
-        // - Commute gates to reduce depth
+    /// Convert intermediate two-qubit instructions to concrete gate objects.
+    ///
+    /// Note: the returned `Arc<dyn Gate>` values carry only the gate type;
+    /// the per-instruction qubit indices (`control`/`target`/`qubit`) are
+    /// not preserved. Callers must replay `gates` positionally against the
+    /// original `instructions` (e.g. SWAP = `[CNOT01, CNOT10, CNOT01]`
+    /// becomes `[CNot, CNot, CNot]` — direction lives in the instruction
+    /// order, not the gate objects). See `DecompositionResult` docs.
+    ///
+    /// Errors on `SqrtISWAP`: no dedicated √iSWAP gate type exists in
+    /// `simq-gates`, and substituting `ISwap` would silently miscompile
+    /// (different unitary). Callers on a √iSWAP basis should use the
+    /// expanded CNOT form from `decompose_sqrt_iswap` instead.
+    pub fn instructions_to_gates(
+        instructions: &[TwoQubitGateInstruction],
+    ) -> Result<Vec<Arc<dyn Gate>>> {
+        use simq_gates::{
+            CNot, Hadamard, ISwap, RotationX, RotationY, RotationZ, SGate, Swap, TGate, CZ,
+        };
+
+        instructions
+            .iter()
+            .map(|inst| -> Result<Arc<dyn Gate>> {
+                match inst {
+                    TwoQubitGateInstruction::CNOT { .. } => Ok(Arc::new(CNot)),
+                    TwoQubitGateInstruction::CZ => Ok(Arc::new(CZ)),
+                    TwoQubitGateInstruction::ISWAP => Ok(Arc::new(ISwap)),
+                    TwoQubitGateInstruction::SqrtISWAP => Err(QuantumError::ValidationError(
+                        "√iSWAP has no concrete gate type in simq-gates; use the CNOT expansion from decompose_sqrt_iswap or a CNOT/CZ entangling basis"
+                            .to_string(),
+                    )),
+                    TwoQubitGateInstruction::SWAP => Ok(Arc::new(Swap)),
+                    TwoQubitGateInstruction::Hadamard { .. } => Ok(Arc::new(Hadamard)),
+                    TwoQubitGateInstruction::SGate { .. } => Ok(Arc::new(SGate)),
+                    TwoQubitGateInstruction::TGate { .. } => Ok(Arc::new(TGate)),
+                    TwoQubitGateInstruction::Rx { angle, .. } => {
+                        Ok(Arc::new(RotationX::new(*angle)))
+                    },
+                    TwoQubitGateInstruction::Ry { angle, .. } => {
+                        Ok(Arc::new(RotationY::new(*angle)))
+                    },
+                    TwoQubitGateInstruction::Rz { angle, .. } => {
+                        Ok(Arc::new(RotationZ::new(*angle)))
+                    },
+                }
+            })
+            .collect()
     }
 }
 
@@ -267,7 +312,7 @@ impl Decomposer for TwoQubitDecomposer {
             )));
         }
 
-        // Get gate matrix
+        // Get gate matrix for validation (even known gates are validated).
         let matrix = gate.matrix().ok_or_else(|| {
             QuantumError::ValidationError("Gate does not provide matrix representation".to_string())
         })?;
@@ -278,7 +323,7 @@ impl Decomposer for TwoQubitDecomposer {
             ));
         }
 
-        // Convert to Matrix4 format
+        // Convert to Matrix4 format for unitarity check.
         let mut matrix_4x4: Matrix4 = [[ZERO; 4]; 4];
         #[allow(clippy::needless_range_loop)]
         for i in 0..4 {
@@ -287,24 +332,84 @@ impl Decomposer for TwoQubitDecomposer {
                 matrix_4x4[i][j] = Complex64::new(matrix[idx].re, matrix[idx].im);
             }
         }
-
-        // Decompose using canonical decomposition
-        let mut decomp = self.decompose_canonical(&matrix_4x4)?;
-
-        // Optimize if requested
-        if config.optimization_level > 0 {
-            self.optimize_decomposition(&mut decomp, config.optimization_level);
+        if !is_unitary_4x4(&matrix_4x4) {
+            return Err(QuantumError::ValidationError("Matrix is not unitary".to_string()));
         }
 
-        // TODO: Convert decomposition to gate sequence
-        let gates: Vec<Arc<dyn Gate>> = vec![];
+        // Dispatch known gates to their exact decompositions. Generic
+        // unitaries require the unimplemented magic-basis canonical
+        // decomposition, so error loudly instead of returning an empty
+        // gate list with fidelity 1.0.
+        let name_upper = gate.name().to_uppercase();
+        let instructions: Vec<TwoQubitGateInstruction> =
+            if name_upper.contains("SWAP") && !name_upper.contains("ISWAP") {
+                let inst = self.decompose_swap();
+                if inst.is_empty() {
+                    return Err(QuantumError::ValidationError(format!(
+                        "SWAP decomposition not available for entangling basis {:?}",
+                        self.entangling_gate
+                    )));
+                }
+                inst
+            } else if name_upper.contains("ISWAP") || name_upper.contains("SQRTISWAP") {
+                if name_upper.contains("SQRT") {
+                    self.decompose_sqrt_iswap()
+                } else {
+                    self.decompose_iswap()
+                }
+            } else if name_upper == "CZ" {
+                if self.entangling_gate == EntanglementGate::CNOT {
+                    Self::cz_to_cnot()
+                } else {
+                    vec![TwoQubitGateInstruction::CZ]
+                }
+            } else if name_upper == "CNOT" || name_upper == "CX" {
+                if self.entangling_gate == EntanglementGate::CZ {
+                    Self::cnot_to_cz()
+                } else {
+                    vec![TwoQubitGateInstruction::CNOT {
+                        control: 0,
+                        target: 1,
+                    }]
+                }
+            } else {
+                // Generic two-qubit unitary: canonical decomposition needed.
+                self.decompose_canonical(&matrix_4x4)?;
+                unreachable!("decompose_canonical always errors for generic gates");
+            };
+
+        let gates = Self::instructions_to_gates(&instructions)?;
+        if gates.is_empty() {
+            return Err(QuantumError::ValidationError(format!(
+                "Two-qubit decomposition of '{}' produced no gates",
+                gate.name()
+            )));
+        }
+
+        let two_qubit_count = instructions
+            .iter()
+            .filter(|i| {
+                matches!(
+                    i,
+                    TwoQubitGateInstruction::CNOT { .. }
+                        | TwoQubitGateInstruction::CZ
+                        | TwoQubitGateInstruction::ISWAP
+                        | TwoQubitGateInstruction::SqrtISWAP
+                        | TwoQubitGateInstruction::SWAP
+                )
+            })
+            .count();
+        let gate_count = gates.len();
+
+        // Suppress unused warning when optimization is a pass-through.
+        let _ = config.optimization_level;
 
         Ok(DecompositionResult {
             gates,
             fidelity: 1.0,
-            depth: 7, // Typical depth for 3 CNOTs + single-qubit layers
-            gate_count: decomp.num_entangling * 3 + decomp.single_qubit_layers.len(),
-            two_qubit_count: decomp.num_entangling,
+            depth: gate_count,
+            gate_count,
+            two_qubit_count,
             metadata: DecompositionMetadata {
                 strategy: format!("{:?} canonical decomposition", self.entangling_gate),
                 optimized: config.optimization_level > 0,
@@ -314,6 +419,14 @@ impl Decomposer for TwoQubitDecomposer {
         })
     }
 
+    /// Check whether this decomposer may handle the gate.
+    ///
+    /// This is a shape check only (2 qubits + matrix present), not a
+    /// synthesizability guarantee: `decompose` still errors for generic
+    /// unitaries that need the unimplemented magic-basis canonical
+    /// decomposition, and for √iSWAP instructions with no concrete gate
+    /// type. Callers must handle `decompose` returning `Err` even when this
+    /// returns `true`.
     fn can_decompose(&self, gate: &dyn Gate) -> bool {
         gate.num_qubits() == 2 && gate.matrix().is_some()
     }
@@ -475,19 +588,24 @@ mod tests {
     }
 
     #[test]
-    fn test_decompose_canonical_succeeds_on_identity() {
+    fn test_decompose_canonical_errors_on_identity() {
+        // Generic magic-basis decomposition is unimplemented: even the
+        // identity must error rather than return an empty placeholder with
+        // fidelity 1.0.
         let decomposer = TwoQubitDecomposer::new(EntanglementGate::CZ);
-        let result = decomposer.decompose_canonical(&identity_matrix4()).unwrap();
-        assert_eq!(result.entangling_gate, EntanglementGate::CZ);
-        assert_eq!(result.num_entangling, 3);
-        assert!(result.single_qubit_layers.is_empty());
+        let result = decomposer.decompose_canonical(&identity_matrix4());
+        assert!(result.is_err());
     }
 
     #[test]
     fn test_optimize_decomposition_noop_level_zero() {
         let decomposer = TwoQubitDecomposer::new(EntanglementGate::CNOT);
-        let mut decomp = decomposer.decompose_canonical(&identity_matrix4()).unwrap();
-        // level == 0 hits the `if level == 0 {}` branch and is a no-op
+        let mut decomp = CanonicalDecomposition {
+            entangling_gate: EntanglementGate::CNOT,
+            single_qubit_layers: vec![],
+            num_entangling: 3,
+        };
+        // Pass-through regardless of level.
         decomposer.optimize_decomposition(&mut decomp, 0);
         assert_eq!(decomp.num_entangling, 3);
     }
@@ -495,9 +613,12 @@ mod tests {
     #[test]
     fn test_optimize_decomposition_nonzero_level_still_noop_today() {
         let decomposer = TwoQubitDecomposer::new(EntanglementGate::CNOT);
-        let mut decomp = decomposer.decompose_canonical(&identity_matrix4()).unwrap();
+        let mut decomp = CanonicalDecomposition {
+            entangling_gate: EntanglementGate::CNOT,
+            single_qubit_layers: vec![],
+            num_entangling: 3,
+        };
         decomposer.optimize_decomposition(&mut decomp, 2);
-        // TODO in production code: currently a no-op regardless of level
         assert_eq!(decomp.num_entangling, 3);
     }
 
@@ -578,8 +699,36 @@ mod tests {
         };
         let result = decomposer.decompose(&gate, &config).unwrap();
         assert!(result.metadata.optimized);
-        assert_eq!(result.two_qubit_count, 3);
-        assert_eq!(result.depth, 7);
+        // CZ -> H CNOT H: 3 gates, 1 entangling, real non-empty sequence.
+        assert!(!result.gates.is_empty());
+        assert_eq!(result.gate_count, result.gates.len());
+        assert_eq!(result.gate_count, 3);
+        assert_eq!(result.two_qubit_count, 1);
+        assert_eq!(result.depth, 3);
+    }
+
+    #[test]
+    fn test_decomposer_trait_generic_unitary_errors() {
+        // Generic two-qubit unitaries have no exact decomposition yet:
+        // must error instead of returning empty gates with fidelity 1.0.
+        let decomposer = TwoQubitDecomposer::new(EntanglementGate::CNOT);
+        let config = DecompositionConfig::default();
+        let gate = MockGate {
+            name: "CUSTOM2Q".to_string(),
+            n_qubits: 2,
+            matrix: Some(identity_matrix4_flat()),
+        };
+        let result = decomposer.decompose(&gate, &config);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_instructions_to_gates_rejects_sqrt_iswap() {
+        // No concrete √iSWAP gate exists; substituting ISwap would silently
+        // miscompile, so conversion must error.
+        let result =
+            TwoQubitDecomposer::instructions_to_gates(&[TwoQubitGateInstruction::SqrtISWAP]);
+        assert!(result.is_err());
     }
 
     #[test]

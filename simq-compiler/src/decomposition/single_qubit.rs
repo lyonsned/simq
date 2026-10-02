@@ -316,6 +316,66 @@ impl SingleQubitDecomposer {
             angles.gamma = PI;
         }
     }
+
+    /// Convert Euler angles to concrete single-qubit gates for `self.basis`.
+    fn angles_to_gates(&self, angles: &EulerAngles) -> Result<Vec<Arc<dyn Gate>>> {
+        use simq_gates::{RotationX, RotationY, RotationZ, U3};
+
+        if angles.is_identity() {
+            return Ok(vec![]);
+        }
+
+        let mut gates: Vec<Arc<dyn Gate>> = Vec::new();
+        let push_rz = |gates: &mut Vec<Arc<dyn Gate>>, angle: f64| {
+            if angle.abs() > EPSILON {
+                gates.push(Arc::new(RotationZ::new(angle)));
+            }
+        };
+        let push_ry = |gates: &mut Vec<Arc<dyn Gate>>, angle: f64| {
+            if angle.abs() > EPSILON {
+                gates.push(Arc::new(RotationY::new(angle)));
+            }
+        };
+        let push_rx = |gates: &mut Vec<Arc<dyn Gate>>, angle: f64| {
+            if angle.abs() > EPSILON {
+                gates.push(Arc::new(RotationX::new(angle)));
+            }
+        };
+
+        match self.basis {
+            EulerBasis::ZYZ | EulerBasis::HT => {
+                push_rz(&mut gates, angles.beta);
+                push_ry(&mut gates, angles.gamma);
+                push_rz(&mut gates, angles.delta);
+            },
+            EulerBasis::ZXZ => {
+                push_rz(&mut gates, angles.beta);
+                push_rx(&mut gates, angles.gamma);
+                push_rz(&mut gates, angles.delta);
+            },
+            EulerBasis::XYX => {
+                push_rx(&mut gates, angles.beta);
+                push_ry(&mut gates, angles.gamma);
+                push_rx(&mut gates, angles.delta);
+            },
+            EulerBasis::YZY => {
+                push_ry(&mut gates, angles.beta);
+                push_rz(&mut gates, angles.gamma);
+                push_ry(&mut gates, angles.delta);
+            },
+            EulerBasis::U3 => {
+                gates.push(Arc::new(U3::new(angles.gamma, angles.beta, angles.delta)));
+            },
+        }
+
+        if gates.is_empty() {
+            return Err(QuantumError::ValidationError(
+                "Euler decomposition produced no gates for a non-identity unitary".to_string(),
+            ));
+        }
+
+        Ok(gates)
+    }
 }
 
 impl Decomposer for SingleQubitDecomposer {
@@ -360,15 +420,21 @@ impl Decomposer for SingleQubitDecomposer {
             self.optimize_angles(&mut angles);
         }
 
-        // TODO: Convert angles to gate sequence based on config.basis
-        // For now, return empty gate sequence
-        let gates: Vec<Arc<dyn Gate>> = vec![];
+        // Convert angles to a real gate sequence for the requested basis.
+        // Identity needs no gates; anything else must produce a non-empty,
+        // verifiable sequence (never empty with fidelity 1.0).
+        let gates = self.angles_to_gates(&angles)?;
+
+        let gate_count = gates.len();
+        // Identity decomposition is exact with zero gates; otherwise the
+        // Euler reconstruction is exact up to numerical precision.
+        let fidelity = 1.0;
 
         Ok(DecompositionResult {
             gates,
-            fidelity: 1.0,
-            depth: 3, // Typically 3 rotations
-            gate_count: 3,
+            fidelity,
+            depth: gate_count,
+            gate_count,
             two_qubit_count: 0,
             metadata: DecompositionMetadata {
                 strategy: format!("{:?} decomposition", self.basis),
@@ -691,7 +757,10 @@ mod tests {
         };
         let result = decomposer.decompose(&gate, &config).unwrap();
         assert!(result.metadata.optimized);
-        assert_eq!(result.gate_count, 3);
+        // Must emit a real, non-empty gate sequence (never empty + fidelity 1.0).
+        assert!(!result.gates.is_empty());
+        assert_eq!(result.gate_count, result.gates.len());
+        assert_eq!(result.depth, result.gates.len());
     }
 
     #[test]

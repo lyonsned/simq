@@ -269,22 +269,12 @@ impl MultiQubitDecomposer {
             return self.decompose_mcx_linear(num_controls);
         }
 
-        // Use a tree-like structure to compute the AND of all controls
-        // Each layer uses ancillas to compute partial ANDs
-
-        // Forward pass: compute ANDs
-        // TODO: Implement tree structure
-
-        // Apply controlled-X from final ancilla
-        let gates = vec![MultiQubitInstruction::CNOT {
-            control: num_controls + num_ancillas - 1,
-            target: num_controls,
-        }];
-
-        // Backward pass: uncompute ANDs
-        // TODO: Implement uncomputation
-
-        gates
+        // The tree-structured AND computation with uncomputation is not
+        // implemented yet. Emitting a single CNOT here would claim an
+        // n-controlled X equals one CNOT, which is actively incorrect.
+        // Fall back to the correct linear decomposition until the
+        // logarithmic tree is implemented.
+        self.decompose_mcx_linear(num_controls)
     }
 
     /// Decompose controlled-controlled-Z (CCZ)
@@ -342,6 +332,34 @@ impl MultiQubitDecomposer {
             },
         }
     }
+
+    /// Convert intermediate instructions to concrete gate objects.
+    ///
+    /// Same positional-replay caveat as the two-qubit converter: per-gate
+    /// qubit indices are not preserved in the returned objects (see
+    /// `DecompositionResult` docs).
+    pub fn instructions_to_gates(instructions: &[MultiQubitInstruction]) -> Vec<Arc<dyn Gate>> {
+        use simq_gates::{
+            CNot, Hadamard, PauliX, RotationY, RotationZ, SGate, SGateDagger, TGate, TGateDagger,
+        };
+
+        instructions
+            .iter()
+            .map(|inst| -> Arc<dyn Gate> {
+                match inst {
+                    MultiQubitInstruction::CNOT { .. } => Arc::new(CNot),
+                    MultiQubitInstruction::X { .. } => Arc::new(PauliX),
+                    MultiQubitInstruction::H { .. } => Arc::new(Hadamard),
+                    MultiQubitInstruction::T { .. } => Arc::new(TGate),
+                    MultiQubitInstruction::TDagger { .. } => Arc::new(TGateDagger),
+                    MultiQubitInstruction::S { .. } => Arc::new(SGate),
+                    MultiQubitInstruction::SDagger { .. } => Arc::new(SGateDagger),
+                    MultiQubitInstruction::Rz { angle, .. } => Arc::new(RotationZ::new(*angle)),
+                    MultiQubitInstruction::Ry { angle, .. } => Arc::new(RotationY::new(*angle)),
+                }
+            })
+            .collect()
+    }
 }
 
 impl Default for MultiQubitDecomposer {
@@ -393,8 +411,15 @@ impl Decomposer for MultiQubitDecomposer {
             .filter(|i| matches!(i, MultiQubitInstruction::CNOT { .. }))
             .count();
 
-        // TODO: Convert instructions to actual gate sequence
-        let gates: Vec<Arc<dyn Gate>> = vec![];
+        // Convert instructions to concrete gate objects. The instruction
+        // qubit indices are relative positions; DecompositionResult carries
+        // only gate types, so callers apply them positionally.
+        let gates = Self::instructions_to_gates(&instructions);
+        if gates.is_empty() {
+            return Err(QuantumError::ValidationError(format!(
+                "Multi-qubit decomposition of '{gate_name}' produced no gates"
+            )));
+        }
 
         Ok(DecompositionResult {
             gates,
@@ -553,19 +578,16 @@ mod tests {
     }
 
     #[test]
-    fn test_mcx_logarithmic_sufficient_ancillas_uses_tree_path() {
+    fn test_mcx_logarithmic_sufficient_ancillas_falls_back_to_linear() {
+        // The logarithmic tree is not implemented; even with sufficient
+        // ancillas we must fall back to the correct linear decomposition
+        // rather than emit a single CNOT claiming to be an n-controlled X.
         let decomposer = MultiQubitDecomposer::with_ancillas();
-        // num_controls=4 needs >= 2 ancillas; supply exactly 2
         let num_controls = 4;
         let num_ancillas = 2;
         let gates = decomposer.decompose_mcx_logarithmic(num_controls, num_ancillas);
-        assert_eq!(
-            gates,
-            vec![MultiQubitInstruction::CNOT {
-                control: num_controls + num_ancillas - 1,
-                target: num_controls,
-            }]
-        );
+        assert_eq!(gates, decomposer.decompose_mcx_linear(num_controls));
+        assert!(gates.len() > 1);
     }
 
     #[test]
