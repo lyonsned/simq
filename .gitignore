@@ -46,3 +46,5 @@ tarpaulin-report.html
 # Temporary files
 *.tmp
 *.temp
+# Local-only agent instructions (never commit)
+AGENTS.md
